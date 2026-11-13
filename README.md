@@ -12,7 +12,7 @@ assumes.
 ```mermaid
 %%{init: {"theme": "base", "themeVariables": {"primaryColor": "#eef2f7", "primaryTextColor": "#1f2933", "primaryBorderColor": "#52606d", "lineColor": "#7b8794", "clusterBkg": "#dfe5ec", "clusterBorder": "#9aa5b1", "edgeLabelBackground": "#ffffff", "fontFamily": "sans-serif"}}}%%
 flowchart LR
-    subgraph internet[" "]
+    subgraph internet["internet"]
         browser[Browser, EHR callbacks,<br/>MCP clients]
         ehr[EHR FHIR servers]
     end
