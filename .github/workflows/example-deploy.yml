@@ -1,0 +1,53 @@
+# An example of driving `jhe-deploy` from CI. Documentation, not a requirement: the script runs
+# the same way from a laptop. To use it, create an IAM role the workflow can assume with OIDC,
+# name it under `access.deployer_roles` in the configuration so `jhe-deploy access` attaches
+# the JheDeployer-<env> policy to it, and set the variables.
+#
+# It is deliberately not triggered on push: a deploy is a decision.
+
+name: deploy (example)
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: environment name in the configuration
+        required: true
+        default: sandbox
+      jhe_ref:
+        description: JupyterHealth Exchange git ref to build
+        required: true
+        default: main
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: the-commons-project/jupyterhealth-exchange
+          ref: ${{ inputs.jhe_ref }}
+          path: jhe
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm install -g aws-cdk
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --frozen
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      # The per-environment configuration is not in the repository: a secret holds its JSON.
+      - run: mkdir -p config/local && printf '%s' "$CONFIG_JSON" > "config/local/${{ inputs.environment }}.json"
+        env:
+          CONFIG_JSON: ${{ secrets.JHE_DEPLOY_CONFIG }}
+      - run: uv run jhe-deploy -c "config/local/${{ inputs.environment }}.json" deploy --jhe-path ./jhe

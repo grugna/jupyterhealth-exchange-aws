@@ -1,0 +1,14 @@
+# The per-environment configuration carries account ids, VPC and zone ids and domain names.
+# It stays out of the repository; config/example.json is the committed shape.
+config/local/*
+!config/local/.gitkeep
+
+cdk.out/
+cdk.context.json
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+dist/

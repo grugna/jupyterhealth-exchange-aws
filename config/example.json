@@ -1,0 +1,87 @@
+{
+  "name": "<environment name, e.g. sandbox>",
+  "account_id": "<12-digit account id>",
+  "region": "<region, e.g. us-east-2>",
+  "bootstrap_qualifier": "hnb659fds",
+  "termination_protection": true,
+  "log_retention_days": 30,
+  "network": {
+    "mode": "create",
+    "cidr": "10.60.0.0/16",
+    "num_azs": 2,
+    "nat": "gateway",
+    "nat_instance_type": "t4g.micro",
+    "flow_logs": true,
+    "existing": null
+  },
+  "data": {
+    "engine": "rds-postgres",
+    "postgres_major_version": "16",
+    "instance_class": "db.t4g.small",
+    "multi_az": false,
+    "allocated_storage_gib": 20,
+    "max_allocated_storage_gib": 100,
+    "backup_retention_days": 7,
+    "deletion_protection": true,
+    "customer_managed_keys": true,
+    "bundle_bucket_name": null,
+    "log_retention_days": 30,
+    "bundle_noncurrent_version_days": 90,
+    "verify_server_certificate": true
+  },
+  "ops": {
+    "cpu": 512,
+    "memory": 1024
+  },
+  "compute": {
+    "domain_name": "<web host, e.g. jhe.example.org>",
+    "mcp_domain_name": "<mcp host, e.g. mcp.jhe.example.org>",
+    "dns": {
+      "mode": "route53",
+      "hosted_zone_id": "<Route 53 hosted zone id>",
+      "hosted_zone_name": "<zone name, e.g. jhe.example.org>",
+      "certificate_arn": null
+    },
+    "web": {
+      "cpu": 512,
+      "memory": 1024,
+      "min_count": 1,
+      "max_count": 3,
+      "target_cpu_percent": 60,
+      "ephemeral_storage_gib": 50
+    },
+    "mcp": {
+      "enabled": true,
+      "cpu": 256,
+      "memory": 512,
+      "require_audience": true
+    },
+    "tls_to_tasks": {
+      "enabled": true,
+      "certificate": "self-signed"
+    },
+    "hsts_seconds": 31536000,
+    "log_level": "INFO",
+    "email": {
+      "mode": "none",
+      "smtp_host": null,
+      "smtp_port": 587
+    },
+    "open_wearables": false,
+    "alb_idle_timeout_seconds": 300,
+    "environment": {},
+    "schedules": {
+      "ow_poll": "rate(15 minutes)",
+      "patient_access_run_jobs": "rate(5 minutes)"
+    }
+  },
+  "monitoring": {
+    "enabled": true,
+    "alarm_email": "<address for alarm emails, or null>",
+    "target_5xx_threshold": 10
+  },
+  "access": {
+    "deployer_users": [],
+    "deployer_roles": []
+  }
+}
