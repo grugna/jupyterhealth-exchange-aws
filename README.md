@@ -26,51 +26,39 @@ build that meets those requirements.
 ### Architecture
 
 ```mermaid
-%%{init: {"theme": "base", "themeVariables": {"primaryColor": "#eef2f7", "primaryTextColor": "#1f2933", "primaryBorderColor": "#52606d", "lineColor": "#7b8794", "clusterBkg": "#dfe5ec", "clusterBorder": "#9aa5b1", "edgeLabelBackground": "#ffffff", "fontFamily": "sans-serif"}}}%%
-flowchart LR
-    subgraph internet["internet"]
-        browser[Browser, EHR callbacks,<br/>MCP clients]
-        ehr[EHR FHIR servers]
-    end
+flowchart TB
+    clients[Browsers, EHR callbacks,<br/>MCP clients]
     subgraph vpc["VPC"]
         subgraph public["public subnets"]
-            alb[Application Load Balancer<br/>HTTPS, ACM certificate]
-            nat[NAT]
+            alb[Application Load Balancer<br/>public HTTPS]
+            nat[NAT gateway]
         end
         subgraph private["private subnets"]
-            web[web service<br/>gunicorn, TLS in the container]
             mcp[mcp service<br/>optional]
-            cron[cron service<br/>supercronic, JHE's crontab]
-            ops[ops task<br/>migrate, jhe-deploy run, admin create]
+            subgraph jhe["tasks from the JHE image"]
+                ops[ops task]
+                cron[cron service]
+                web[web service]
+            end
         end
         subgraph isolated["isolated subnets"]
-            db[(Postgres on RDS<br/>TLS required)]
+            db[(Postgres on RDS)]
         end
     end
-    s3[(bundle bucket<br/>KMS, versioned)]
-    secrets[Secrets Manager<br/>database, bootstrap-admin,<br/>service, mcp]
-    kms[KMS key]
-
-    browser -->|Route 53| alb
+    s3[(bundle bucket)]
+    ehr[EHR FHIR servers]
+    clients -->|HTTPS| alb
+    alb -->|HTTPS| mcp
     alb -->|HTTPS| web
-    alb -->|HTTPS, host rule| mcp
-    web --> db
-    cron --> db
-    ops --> db
-    web -->|gateway endpoint| s3
-    cron -->|gateway endpoint| s3
-    ops -->|gateway endpoint| s3
-    web -->|through the NAT| ehr
-    cron -->|through the NAT| ehr
-    mcp -->|public URL| alb
-    secrets -.->|at task start| web
-    secrets -.-> cron
-    secrets -.-> mcp
-    secrets -.-> ops
-    kms -.-> db
-    kms -.-> s3
-    kms -.-> secrets
+    jhe -->|outbound| nat
+    nat -->|HTTPS| ehr
+    jhe -->|TLS| db
+    jhe -->|gateway endpoint| s3
 ```
+
+Not drawn: Secrets Manager, which every task reads at start; the KMS key behind the database,
+the bucket and the secrets; and the mcp service's calls to JHE, which go out and back in
+through JHE's public URL.
 
 Requests reach the ALB in the public subnets and nothing else does: every task runs in the
 private subnets with egress through the NAT (the EHRs are on the internet), and Postgres sits
