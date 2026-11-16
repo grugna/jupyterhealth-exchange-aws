@@ -139,7 +139,7 @@ def test_ops_task_migrates_by_default_and_holds_the_operator_privileges(default)
     families = {
         r["Properties"]["Family"] for r in compute.find_resources("AWS::ECS::TaskDefinition").values()
     }
-    assert families == {"jhe-test-web", "jhe-test-mcp"}, "no separate task for the schedules"
+    assert families == {"jhe-test-web", "jhe-test-mcp", "jhe-test-cron"}
 
 
 def test_tls_to_tasks_by_default(default):
@@ -219,22 +219,58 @@ def test_database_is_isolated_encrypted_and_tls_only(default):
         template.has_resource_properties("AWS::SecretsManager::Secret", {"Name": name})
 
 
-def test_schedules_run_the_web_task_definition(default):
+def test_cron_runs_the_images_crontab_with_the_web_roles(default):
     _, stacks = default
     template = assertions.Template.from_stack(stacks.compute)
-    rules = template.find_resources("AWS::Events::Rule")
-    expressions = {r["Properties"]["Name"]: r["Properties"]["ScheduleExpression"] for r in rules.values()}
-    assert expressions == {
-        "jhe-test-ow_poll": "rate(15 minutes)",
-        "jhe-test-patient_access_run_jobs": "rate(5 minutes)",
+    assert template.find_resources("AWS::Events::Rule") == {}, "the schedule is JHE's crontab, not ours"
+    tasks = {
+        r["Properties"]["Family"]: r["Properties"]
+        for r in template.find_resources("AWS::ECS::TaskDefinition").values()
     }
-    for rule in rules.values():
-        target = rule["Properties"]["Targets"][0]
-        assert "WebTask" in json.dumps(target["EcsParameters"]["TaskDefinitionArn"]), (
-            "the schedules run the web service's task definition, never the ops task"
-        )
-        command = json.loads(target["Input"])["containerOverrides"][0]["command"]
-        assert command[:2] == ["python", "manage.py"]
+    web, cron = tasks["jhe-test-web"], tasks["jhe-test-cron"]
+    container = cron["ContainerDefinitions"][0]
+    assert container["Command"] == ["supercronic", "/code/deploy/crontab"]
+    assert f"@{WEB}" in json.dumps(container["Image"])
+    assert "PortMappings" not in container
+    assert cron["TaskRoleArn"] == web["TaskRoleArn"], "the application's privileges, no more"
+    assert cron["ExecutionRoleArn"] == web["ExecutionRoleArn"]
+    assert cron["EphemeralStorage"] == {"SizeInGiB": 50}, "the sweep refetches dropped pulls"
+    template.has_resource_properties(
+        "AWS::ECS::Service",
+        {
+            "ServiceName": "jhe-test-cron",
+            "DesiredCount": 1,
+            "DeploymentConfiguration": assertions.Match.object_like(
+                {"MinimumHealthyPercent": 0, "MaximumPercent": 100}
+            ),
+        },
+    )
+
+
+def test_cron_failures_and_silence_alarm_from_its_log(default):
+    _, stacks = default
+    template = assertions.Template.from_stack(stacks.monitoring)
+    patterns = {
+        r["Properties"]["FilterPattern"] for r in template.find_resources("AWS::Logs::MetricFilter").values()
+    }
+    assert patterns == {'"error running command"', '"job succeeded"'}
+    template.has_resource_properties(
+        "AWS::CloudWatch::Alarm",
+        {"AlarmName": "jhe-test-cron-silent", "TreatMissingData": "breaching", "EvaluationPeriods": 3},
+    )
+    template.has_resource_properties("AWS::CloudWatch::Alarm", {"AlarmName": "jhe-test-cron-job-failed"})
+    rule = next(iter(template.find_resources("AWS::Events::Rule").values()))
+    assert "cron" not in json.dumps(rule["Properties"]["EventPattern"]), "supercronic outlives a failed job"
+
+
+def test_cron_off_leaves_no_task_and_no_alarms():
+    _, stacks = synth(sample_config(compute={"cron": {"enabled": False}}))
+    compute = assertions.Template.from_stack(stacks.compute)
+    families = {
+        r["Properties"]["Family"] for r in compute.find_resources("AWS::ECS::TaskDefinition").values()
+    }
+    assert "jhe-test-cron" not in families
+    assert assertions.Template.from_stack(stacks.monitoring).find_resources("AWS::Logs::MetricFilter") == {}
 
 
 def test_dns_records_for_both_hosts(default):
@@ -265,12 +301,12 @@ def test_external_dns_has_no_records_and_imports_a_certificate():
     assert template.find_resources("AWS::CertificateManager::Certificate") == {}
 
 
-def test_mcp_off_leaves_one_service():
+def test_mcp_off_leaves_web_and_cron():
     _, stacks = synth(sample_config(compute={"mcp": {"enabled": False}, "mcp_domain_name": None}))
     template = assertions.Template.from_stack(stacks.compute)
-    assert len(template.find_resources("AWS::ECS::Service")) == 1
+    assert len(template.find_resources("AWS::ECS::Service")) == 2
     assert len(template.find_resources("AWS::ElasticLoadBalancingV2::TargetGroup")) == 1
-    assert len(template.find_resources("AWS::ECS::TaskDefinition")) == 1, "web only"
+    assert len(template.find_resources("AWS::ECS::TaskDefinition")) == 2, "web and cron"
 
 
 def test_nat_instance_and_imported_vpc():

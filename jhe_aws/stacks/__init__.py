@@ -2,7 +2,7 @@
 
     network ──> shared (ECR, cluster)
        │           │
-       └──> data ──┴──> ops (the operator's task) ──> compute (ALB, web, mcp, schedules)
+       └──> data ──┴──> ops (the operator's task) ──> compute (ALB, web, mcp, cron)
                                                                    │
                                                                    └──> monitoring
     access (the deployer policy; depends on nothing, deployed by `jhe-deploy access` only)

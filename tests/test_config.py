@@ -53,7 +53,7 @@ def test_load_one_flat_file(tmp_path):
     assert cfg.log_retention_days == 14
     assert cfg.stack_name("data") == "jhe-sandbox-data"
     assert cfg.compute.tls_to_tasks.enabled is True
-    assert cfg.compute.schedules["patient_access_run_jobs"] == "rate(5 minutes)"
+    assert cfg.compute.cron.enabled is True
     assert cfg.ops.cpu == 512
 
 
@@ -83,8 +83,8 @@ def test_cross_field_rules():
         sample_config(compute={"mcp_domain_name": None})
     with pytest.raises(ValueError, match="needs dns.hosted_zone_id"):
         sample_config(compute={"dns": {"mode": "route53", "hosted_zone_id": None}})
-    with pytest.raises(ValueError, match="rate\\(...\\) or cron"):
-        sample_config(compute={"schedules": {"ow_poll": "every 15 minutes"}})
+    with pytest.raises(ValueError, match="schedules"):
+        sample_config(compute={"schedules": {"ow_poll": "rate(15 minutes)"}})  # the crontab is JHE's
     with pytest.raises(ValueError, match="max_count is below min_count"):
         sample_config(compute={"web": {"min_count": 3, "max_count": 1}})
     with pytest.raises(ValueError, match="RDS class"):

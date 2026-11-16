@@ -70,9 +70,11 @@
     "open_wearables": false,
     "alb_idle_timeout_seconds": 300,
     "environment": {},
-    "schedules": {
-      "ow_poll": "rate(15 minutes)",
-      "patient_access_run_jobs": "rate(5 minutes)"
+    "cron": {
+      "enabled": true,
+      "cpu": 256,
+      "memory": 1024,
+      "ephemeral_storage_gib": 50
     }
   },
   "monitoring": {

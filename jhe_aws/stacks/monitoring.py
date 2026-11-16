@@ -1,6 +1,12 @@
-"""Four signals to one SNS topic: web 5xx, no healthy web targets, database storage low, a
-ops or scheduled task that exited non-zero. An email subscription when configured; a partner
-wires the topic to whatever they page with.
+"""Signals to one SNS topic: web 5xx, no healthy web targets, database storage low, an ops task
+that exited non-zero, and two on the cron task's log: a periodic job failed, and no job has
+succeeded for a while. An email subscription when configured; a partner wires the topic to
+whatever they page with.
+
+The cron task runs supercronic, which outlives a failing job and reports it as a log line
+(`level=error msg="error running command: exit status N"`), and logs `msg="job succeeded"`
+for each run that worked. JHE's crontab runs the patient-access sweep every minute, so a
+quarter of an hour without a success means the scheduler is stopped or every job is failing.
 """
 
 from __future__ import annotations
@@ -11,6 +17,7 @@ from aws_cdk import aws_cloudwatch_actions as cw_actions
 from aws_cdk import aws_elasticloadbalancingv2 as elbv2
 from aws_cdk import aws_events as events
 from aws_cdk import aws_events_targets as targets
+from aws_cdk import aws_logs as logs
 from aws_cdk import aws_sns as sns
 from aws_cdk import aws_sns_subscriptions as subscriptions
 from constructs import Construct
@@ -79,27 +86,54 @@ class MonitoringStack(cdk.Stack):
             description="Under 2 GiB of free database storage",
         )
 
+        if compute.cron_logs is not None:
+            self._alarm(
+                "cron-job-failed",
+                self._log_count("CronJobFailed", compute.cron_logs, '"error running command"'),
+                threshold=1,
+                comparison=cw.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+                description="A periodic job exited non-zero; `jhe-deploy logs cron` has its output",
+            )
+            self._alarm(
+                "cron-silent",
+                self._log_count("CronJobSucceeded", compute.cron_logs, '"job succeeded"'),
+                threshold=1,
+                comparison=cw.ComparisonOperator.LESS_THAN_THRESHOLD,
+                description="No periodic job has succeeded for fifteen minutes",
+                evaluation_periods=3,
+                treat_missing=cw.TreatMissingData.BREACHING,
+            )
+
         events.Rule(
             self,
             "OpsTaskFailed",
             rule_name=f"jhe-{cfg.name}-task-failed",
-            description=f"JHE {cfg.name}: an ops or scheduled task exited non-zero",
+            description=f"JHE {cfg.name}: an ops task exited non-zero",
             event_pattern=events.EventPattern(
                 source=["aws.ecs"],
                 detail_type=["ECS Task State Change"],
                 detail={
                     "clusterArn": [shared.cluster.cluster_arn],
                     "lastStatus": ["STOPPED"],
-                    "group": [
-                        f"family:{ops.task_definition.family}",
-                        f"family:{compute.web_task.family}",
-                    ],
+                    "group": [f"family:{ops.task_definition.family}"],
                     "containers": {"exitCode": [{"anything-but": [0]}]},
                 },
             ),
             targets=[targets.SnsTopic(self.topic)],
         )
         cdk.CfnOutput(self, "AlarmTopicArn", value=self.topic.topic_arn)
+
+    def _log_count(self, name: str, log_group: logs.ILogGroup, pattern: str) -> cw.Metric:
+        """How many lines of `log_group` matched `pattern` in five minutes."""
+        return logs.MetricFilter(
+            self,
+            f"Filter-{name}",
+            log_group=log_group,
+            filter_pattern=logs.FilterPattern.literal(pattern),
+            metric_namespace=f"JHE/{self.cfg.name}",
+            metric_name=name,
+            metric_value="1",
+        ).metric(period=cdk.Duration.minutes(5), statistic="Sum")
 
     def _alarm(
         self,

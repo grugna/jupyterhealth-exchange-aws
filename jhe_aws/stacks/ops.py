@@ -8,7 +8,7 @@ bootstrap secret, which only this task reads.
 
 The task role holds the union of what an operator's command might need: the bundle bucket now,
 the migrate database credentials when that follow-on lands. Nothing automated uses this task:
-the scheduled jobs run the web service's own task definition, so they never carry any of it.
+the periodic jobs run as the cron task with the web service's roles, so they never carry any of it.
 """
 
 from __future__ import annotations

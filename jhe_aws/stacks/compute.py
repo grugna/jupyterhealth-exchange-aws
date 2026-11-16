@@ -1,15 +1,16 @@
-"""The serving side: the certificate, the ALB, the web and MCP services, the schedules, DNS.
+"""The serving side: the certificate, the ALB, the web, MCP and cron services, DNS.
 
 One ALB, one HTTPS listener with one certificate carrying both host names. The default action
 forwards to the web target group; a host-header rule sends the MCP host to the MCP target
 group. HTTP redirects to HTTPS. With `tls_to_tasks` on (the default) the target groups and
 health checks speak HTTPS to the containers, which issue their own certificates at start.
 
-The scheduled jobs are EventBridge rules that RunTask the web service's own task definition
-with the management command as the container command override: they are the application's
-background work and get exactly the web service's privileges, no cron process, each run its
-own task with its own log stream and exit code. Anything a person runs uses the ops stack's
-task instead.
+The periodic jobs are one always-on task running supercronic on the crontab the JHE image
+ships, the arrangement JHE's own compose and Fly deployments use: the schedule lives in JHE,
+so there is no second list here to fall out of step. They are the application's background
+work and run with exactly the web service's roles. A failing job is a log line, not a task
+exit, so the monitoring stack alarms on supercronic's log. Anything a person runs uses the ops
+stack's task instead.
 """
 
 from __future__ import annotations
@@ -19,8 +20,6 @@ from aws_cdk import aws_certificatemanager as acm
 from aws_cdk import aws_ec2 as ec2
 from aws_cdk import aws_ecs as ecs
 from aws_cdk import aws_elasticloadbalancingv2 as elbv2
-from aws_cdk import aws_events as events
-from aws_cdk import aws_events_targets as targets
 from aws_cdk import aws_iam as iam
 from aws_cdk import aws_logs as logs
 from aws_cdk import aws_route53 as r53
@@ -33,7 +32,6 @@ from jhe_aws.images import Images
 
 from .data import DataStack
 from .jhe_container import (
-    CONTAINER_NAME,
     JHE_PORT,
     MCP_PORT,
     execution_role,
@@ -48,6 +46,7 @@ from .ops import OpsStack
 from .shared import SharedStack
 
 HEALTH_PATH = "/health"
+CRONTAB = "/code/deploy/crontab"  # in the JHE image
 
 
 class ComputeStack(cdk.Stack):
@@ -118,6 +117,10 @@ class ComputeStack(cdk.Stack):
             retention=_retention(cfg.log_retention_days),
             removal_policy=cdk.RemovalPolicy.DESTROY,
         )
+        web_task_role = jhe_task_role(self, "WebTaskRole", cfg, data, role_name=f"jhe-{cfg.name}-web-task")
+        web_execution_role = execution_role(
+            self, "WebExecutionRole", cfg, role_name=f"jhe-{cfg.name}-web-execution"
+        )
         self.web_task = jhe_task_definition(
             self,
             "WebTask",
@@ -129,10 +132,8 @@ class ComputeStack(cdk.Stack):
             cpu=compute.web.cpu,
             memory=compute.web.memory,
             ephemeral_storage_gib=compute.web.ephemeral_storage_gib,
-            task_role=jhe_task_role(self, "WebTaskRole", cfg, data, role_name=f"jhe-{cfg.name}-web-task"),
-            execution_role=execution_role(
-                self, "WebExecutionRole", cfg, role_name=f"jhe-{cfg.name}-web-execution"
-            ),
+            task_role=web_task_role,
+            execution_role=web_execution_role,
             log_group=web_logs,
             stream_prefix="web",
             command=None,  # the image's gunicorn
@@ -195,22 +196,44 @@ class ComputeStack(cdk.Stack):
                 deregistration_delay=cdk.Duration.seconds(30),
             )
 
-        # --- schedules: the web task definition, command overridden ---------------------------
-        for command, expression in cfg.compute.schedules.items():
-            self._schedule(command, expression, shared, network)
-        if cfg.compute.schedules:
-            # EventBridge's role is created on the web task definition by the first schedule
-            # that targets it; it may run any revision and tag the tasks it starts.
-            NagSuppressions.add_resource_suppressions_by_path(
+        # --- cron: supercronic on the image's crontab, with the web service's roles ------------
+        self.cron_service: ecs.FargateService | None = None
+        self.cron_logs: logs.LogGroup | None = None
+        if compute.cron.enabled:
+            self.cron_logs = logs.LogGroup(
                 self,
-                f"/{self.stack_name}/WebTask/EventsRole",
-                [
-                    {
-                        "id": "AwsSolutions-IAM5",
-                        "reason": "EventBridge runs every revision of the web task definition.",
-                    }
-                ],
-                apply_to_children=True,
+                "CronLogs",
+                log_group_name=f"/jhe/{cfg.name}/cron",
+                retention=_retention(cfg.log_retention_days),
+                removal_policy=cdk.RemovalPolicy.DESTROY,
+            )
+            cron_task = jhe_task_definition(
+                self,
+                "CronTask",
+                cfg,
+                shared,
+                data,
+                family=f"jhe-{cfg.name}-cron",
+                image_digest=images.web,
+                cpu=compute.cron.cpu,
+                memory=compute.cron.memory,
+                ephemeral_storage_gib=compute.cron.ephemeral_storage_gib,
+                task_role=web_task_role,
+                execution_role=web_execution_role,
+                log_group=self.cron_logs,
+                stream_prefix="cron",
+                command=["supercronic", CRONTAB],
+            )
+            # Exactly one scheduler: a roll stops the old task before starting the new one, so
+            # no job runs twice. A sweep cut short is picked up by the next one.
+            self.cron_service = self._service(
+                "CronService",
+                f"jhe-{cfg.name}-cron",
+                cron_task,
+                shared,
+                network,
+                self.web_sg,
+                behind_load_balancer=False,
             )
 
         # --- dns -----------------------------------------------------------------------------
@@ -282,6 +305,8 @@ class ComputeStack(cdk.Stack):
         shared: SharedStack,
         network: NetworkStack,
         security_group: ec2.SecurityGroup,
+        *,
+        behind_load_balancer: bool = True,
     ) -> ecs.FargateService:
         return ecs.FargateService(
             self,
@@ -292,10 +317,11 @@ class ComputeStack(cdk.Stack):
             security_groups=[security_group],
             vpc_subnets=network.private_subnets,
             assign_public_ip=False,
-            min_healthy_percent=100,
-            max_healthy_percent=200,
+            desired_count=None if behind_load_balancer else 1,  # web is autoscaled
+            min_healthy_percent=100 if behind_load_balancer else 0,
+            max_healthy_percent=200 if behind_load_balancer else 100,
             circuit_breaker=ecs.DeploymentCircuitBreaker(enable=True, rollback=True),
-            health_check_grace_period=cdk.Duration.seconds(120),
+            health_check_grace_period=cdk.Duration.seconds(120) if behind_load_balancer else None,
             enable_execute_command=False,
             propagate_tags=ecs.PropagatedTagSource.SERVICE,
         )
@@ -371,42 +397,3 @@ class ComputeStack(cdk.Stack):
             ],
         )
         return task
-
-    def _schedule(
-        self, command: str, expression: str, shared: SharedStack, network: NetworkStack
-    ) -> events.Rule:
-        rule = events.Rule(
-            self,
-            f"Schedule-{command}",
-            rule_name=f"jhe-{self.cfg.name}-{command}",
-            description=f"JHE {self.cfg.name}: manage.py {command} as a web task, {expression}",
-            schedule=events.Schedule.expression(expression),
-            targets=[
-                targets.EcsTask(
-                    cluster=shared.cluster,
-                    task_definition=self.web_task,
-                    container_overrides=[
-                        targets.ContainerOverride(
-                            container_name=CONTAINER_NAME,
-                            command=["python", "manage.py", command],
-                        )
-                    ],
-                    subnet_selection=network.private_subnets,
-                    security_groups=[self.web_sg],
-                    launch_type=ecs.LaunchType.FARGATE,
-                    platform_version=ecs.FargatePlatformVersion.LATEST,
-                    propagate_tags=ecs.PropagatedTagSource.TASK_DEFINITION,
-                )
-            ],
-        )
-        NagSuppressions.add_resource_suppressions(
-            rule,
-            [
-                {
-                    "id": "AwsSolutions-IAM5",
-                    "reason": "EventBridge runs every revision of the web task definition family.",
-                }
-            ],
-            apply_to_children=True,
-        )
-        return rule

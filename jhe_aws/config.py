@@ -199,6 +199,18 @@ STACK_ENVIRONMENT = frozenset(
 """What the stacks set on the JHE container themselves; `compute.environment` may not."""
 
 
+class CronConfig(Strict):
+    """JHE's periodic jobs: one always-on task running supercronic on the crontab the JHE image
+    ships (`deploy/crontab`), as JHE's own compose and Fly deployments do. The schedule is the
+    image's, so a job JHE adds runs here without a change to this repository. The task has the
+    web service's roles and, because the sweep refetches dropped pulls, a spool disk of its own."""
+
+    enabled: bool = True
+    cpu: int = 256
+    memory: int = 1024
+    ephemeral_storage_gib: int = Field(default=50, ge=21, le=200)
+
+
 class ComputeConfig(Strict):
     domain_name: str
     mcp_domain_name: str | None = None
@@ -223,21 +235,7 @@ class ComputeConfig(Strict):
             raise ValueError(f"compute.environment may not set {', '.join(sorted(refused))}")
         return env
 
-    # management command -> EventBridge schedule expression; each run is the web service's task
-    # definition with the command overridden, so it has exactly the web service's privileges
-    schedules: dict[str, str] = Field(
-        default_factory=lambda: {"ow_poll": "rate(15 minutes)", "patient_access_run_jobs": "rate(5 minutes)"}
-    )
-
-    @field_validator("schedules")
-    @classmethod
-    def _expressions(cls, value: dict[str, str]) -> dict[str, str]:
-        for command, expression in value.items():
-            if not (expression.startswith("rate(") or expression.startswith("cron(")):
-                raise ValueError(
-                    f"compute.schedules[{command!r}] must be a rate(...) or cron(...) expression"
-                )
-        return value
+    cron: CronConfig = CronConfig()
 
     @model_validator(mode="after")
     def _mcp_host(self) -> ComputeConfig:
@@ -252,7 +250,7 @@ class ComputeConfig(Strict):
 class OpsConfig(Strict):
     """The operator's task: `manage.py migrate` before each release, `jhe-deploy run`, the first
     admin. Its own task definition and role with the union of what an operator needs (the
-    bucket, and later the migrate database credentials), so that the scheduled jobs, which run
+    bucket, and later the migrate database credentials), so that the periodic jobs, which run
     as the web service, never carry any of it."""
 
     cpu: int = 512

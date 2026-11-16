@@ -579,7 +579,7 @@ def cmd_up(args: argparse.Namespace, aws: Aws, cfg: EnvironmentConfig, config_pa
 
 def cmd_restart(args: argparse.Namespace, aws: Aws, cfg: EnvironmentConfig, config_path: Path) -> int:
     cluster = f"jhe-{cfg.name}"
-    for part in ("web", "mcp"):
+    for part in ("web", "mcp", "cron"):
         service = f"jhe-{cfg.name}-{part}"
         if aws.restart_service(cluster, service):
             say(f"{service}: new deployment started; the old tasks drain once the new ones are healthy")
@@ -692,9 +692,11 @@ def parser() -> argparse.ArgumentParser:
     sub.add_parser("up", help="start the database, redeploy from the remembered images").set_defaults(
         fn=cmd_up
     )
-    sub.add_parser("restart", help="fresh web and mcp tasks from the same image").set_defaults(fn=cmd_restart)
+    sub.add_parser("restart", help="fresh web, mcp and cron tasks from the same image").set_defaults(
+        fn=cmd_restart
+    )
     lg = sub.add_parser("logs", help="a task log group, oldest first")
-    lg.add_argument("group", choices=("web", "ops", "mcp"))
+    lg.add_argument("group", choices=("web", "cron", "ops", "mcp"))
     lg.add_argument("--since", default="30m", help="how far back: 30m, 2h, 1d (default 30m)")
     lg.add_argument("--filter", help="a CloudWatch Logs filter pattern, e.g. 'job' or '?error ?Traceback'")
     lg.set_defaults(fn=cmd_logs)
