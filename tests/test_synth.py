@@ -263,6 +263,25 @@ def test_cron_failures_and_silence_alarm_from_its_log(default):
     assert "cron" not in json.dumps(rule["Properties"]["EventPattern"]), "supercronic outlives a failed job"
 
 
+def test_a_failed_ops_task_is_a_readable_message(default):
+    _, stacks = default
+    template = assertions.Template.from_stack(stacks.monitoring)
+    rule = next(iter(template.find_resources("AWS::Events::Rule").values()))
+    transformer = rule["Properties"]["Targets"][0]["InputTransformer"]
+    assert set(transformer["InputPathsMap"].values()) >= {
+        "$.detail.startedBy",
+        "$.detail.containers[0].exitCode",
+        "$.detail.taskArn",
+    }
+    lines = transformer["InputTemplate"].splitlines()
+    assert len(lines) > 10 and all(json.loads(line) is not None for line in lines), "a string per line"
+    text = json.dumps(transformer["InputTemplate"])
+    assert "JHE test: an ops task exited non-zero." in text
+    assert "log-group/$252Fjhe$252Ftest$252Fops" in text
+    assert "/ecs/v2/clusters/jhe-test/tasks" in text
+    assert "Fn::" not in text and "Ref" not in text, "plain text: no deploy-time references"
+
+
 def test_cron_off_leaves_no_task_and_no_alarms():
     _, stacks = synth(sample_config(compute={"cron": {"enabled": False}}))
     compute = assertions.Template.from_stack(stacks.compute)

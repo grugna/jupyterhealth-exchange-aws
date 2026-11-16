@@ -119,9 +119,43 @@ class MonitoringStack(cdk.Stack):
                     "containers": {"exitCode": [{"anything-but": [0]}]},
                 },
             ),
-            targets=[targets.SnsTopic(self.topic)],
+            targets=[targets.SnsTopic(self.topic, message=self._task_failed_message())],
         )
         cdk.CfnOutput(self, "AlarmTopicArn", value=self.topic.topic_arn)
+
+    def _task_failed_message(self) -> events.RuleTargetInput:
+        """The failed-task event as a few readable lines, by EventBridge's input transformer.
+        A transformer copies whole fields and cannot cut the task id out of the task's ARN, so
+        the links go to the ops log group and the cluster's tasks, and the id (the last part of
+        the ARN, and of the log stream's name) is what to look for there. The command is an
+        array in the event, which does not sit safely inside a text template; `startedBy`, which
+        `jhe-deploy` sets to the start of the command, stands in for it. The template is one
+        string per line: a single string reaches SNS JSON-encoded, its newlines as `\\n`. Each line
+        still arrives in its quotation marks, so there are no blank lines to arrive as `""`."""
+        cfg = self.cfg
+        # Each link ends in a space, so a mail client does not take the line's closing quote into it.
+        console = f"https://{cfg.region}.console.aws.amazon.com"
+        # The names are written out, not referenced: the text must hold no deploy-time tokens.
+        log_group = f"/jhe/{cfg.name}/ops".replace("/", "$252F")  # the Logs console's own encoding
+        field = events.EventField.from_path
+        return events.RuleTargetInput.from_multiline_text(
+            "\n".join(
+                [
+                    f"JHE {cfg.name}: an ops task exited non-zero.",
+                    f"Exit code:  {field('$.detail.containers[0].exitCode')}",
+                    f"Stopped:    {field('$.detail.executionStoppedAt')}",
+                    f"Reason:     {field('$.detail.stoppedReason')}",
+                    f"Started by: {field('$.detail.startedBy')}",
+                    f"Image:      {field('$.detail.containers[0].imageDigest')}",
+                    f"Task:       {field('$.detail.taskArn')}",
+                    "The task's log is the stream ops/jhe/ followed by the task id, in:",
+                    f"{console}/cloudwatch/home?region={cfg.region}#logsV2:log-groups/log-group/{log_group} ",
+                    "The task itself (ECS shows a stopped task for about an hour):",
+                    f"{console}/ecs/v2/clusters/jhe-{cfg.name}/tasks?region={cfg.region} ",
+                    "From this repository: jhe-deploy logs ops --since 1h",
+                ]
+            )
+        )
 
     def _log_count(self, name: str, log_group: logs.ILogGroup, pattern: str) -> cw.Metric:
         """How many lines of `log_group` matched `pattern` in five minutes."""
