@@ -70,6 +70,7 @@ def test_one_function_with_its_settings_and_a_public_url_guarded_by_the_token(en
             "Runtime": "python3.13",
             "Architectures": ["arm64"],
             "Handler": "handler.handler",
+            "Timeout": 900,
             "Environment": {
                 "Variables": {
                     "SECRET_ID": "jhe/test/redcap",

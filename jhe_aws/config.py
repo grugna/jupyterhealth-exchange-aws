@@ -284,7 +284,7 @@ class RedcapIntegration(Strict):
     organization_id: int = Field(ge=1)  # the JHE organization new patients join
     jhe_client_name: str = "USCDI Patient Access"  # the JHE client the invitation is for
     memory_mb: int = Field(default=256, ge=128, le=1024)
-    timeout_seconds: int = Field(default=30, ge=5, le=60)
+    timeout_seconds: int = Field(default=900, ge=5, le=900)  # 900 is Lambda's maximum (15 minutes)
 
     @field_validator("redcap_api_url")
     @classmethod

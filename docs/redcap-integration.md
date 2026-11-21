@@ -42,7 +42,7 @@ In `config/local/<env>.json`:
 | `record_id_field` | the project's record id field, default `record_id` |
 | `organization_id` | the JHE organization new patients join (the integration account must be a member) |
 | `jhe_client_name` | the JHE client the invitation is for, found by name; default `USCDI Patient Access` |
-| `memory_mb`, `timeout_seconds` | the function's size (256) and time limit (30) |
+| `memory_mb`, `timeout_seconds` | the function's size (256) and time limit (900, Lambda's maximum of 15 minutes) |
 
 JHE's address is `compute.domain_name`; it is not repeated here.
 
@@ -113,10 +113,31 @@ tokens, e-mail addresses or links.
 - **The integration account** can create patients in its organization and create invitations;
   JHE's invitation endpoint does not check the caller's role, so give the account only the
   `member` role in one organization and watch what it does.
-- **Timing.** A trigger waits for the function (typically a few seconds: one token, three JHE
-  calls and two REDCap calls). If REDCap times out the call, the function still finishes and the
-  link appears; the next save sees it and skips.
+- **Timing.** The function makes about seven HTTPS calls in a row (JHE token, client list, patient
+  lookup, create, invitation, the REDCap read and the REDCap write), each waiting at most 10
+  seconds; the function itself may run up to 15 minutes. How long REDCap waits for a trigger's
+  answer is REDCap's setting, not this function's: if REDCap gives up first, the function still
+  finishes and the link appears, and the next save of the record sees it and skips.
+- **Two triggers for one record at once can leave a dead link.** The check "does the record
+  already have a link?" and the write of the link are separate calls. If REDCap fires twice for
+  the same record within the seconds the function takes, both runs pass the check and both create
+  an invitation. The second invitation replaces the first (see above), so the record ends up with
+  whichever link was written last, which is the dead one if the earlier run finished later. The
+  patient is not duplicated (the e-mail is looked up first). Clearing the field and saving again
+  makes a fresh link. See *Later improvements* for the fix.
 - **Secret values** are read from `jhe/<env>/redcap` and kept for five minutes, so a changed
   token or key is in use within five minutes, with no deploy.
 - **Removing it:** delete the `redcap_integration` block and deploy; the stack is removed. The
   secret outlives it (like the others); delete it by hand if it is no longer wanted.
+
+## Later improvements
+
+- **Restrict who can call the URL: API Gateway and an AWS WAF IP allowlist.** REDCap's server has
+  a fixed address in the UChicago data center, so the function URL could be replaced by an API
+  Gateway endpoint with a WAF web ACL that admits only that address (and any test addresses).
+  Only REDCap could then reach it, with the trigger token as a second lock instead of the only
+  one. It adds a few dollars a month (the web ACL, its rule and the requests) and a little
+  infrastructure, and it needs the REDCap server's outbound address from UChicago IT.
+- **One run per record: a lock.** A DynamoDB table with a conditional write keyed by project and
+  record (released when the run ends, with an expiry as a backstop) would make a second run for
+  the same record stop at once, which closes the double-trigger case above.
